@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  instagram-reels-bot:
+    build: .
+    container_name: instagram-reels-bot
+    restart: unless-stopped
+    ports:
+      - "3666:3666"
+    environment:
+      - NODE_ENV=production
+      - PORT=3666
+      - BOT_TOKEN=${BOT_TOKEN}
+    volumes:
+      - ./data:/app/data
+      - ./reels_cache.db:/app/reels_cache.db
+    command: ["npm", "run", "bot"]
+
+  instagram-reels-server:
+    build: .
+    container_name: instagram-reels-server
+    restart: unless-stopped
+    ports:
+      - "3667:3666"
+    environment:
+      - NODE_ENV=production
+      - PORT=3666
+    volumes:
+      - ./data:/app/data
+    command: ["npm", "start"] 
