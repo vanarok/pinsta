@@ -23,14 +23,6 @@ COPY . .
 # Создаем директорию для базы данных
 RUN mkdir -p /app/data
 
-# Создаем пользователя для безопасности
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S bot -u 1001
-
-# Меняем владельца файлов
-RUN chown -R bot:nodejs /app
-USER bot
-
 # Открываем порт для веб-сервера
 EXPOSE 3666
 
