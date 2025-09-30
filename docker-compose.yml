@@ -9,20 +9,9 @@ services:
       - NODE_ENV=production
       - PORT=3666
       - BOT_TOKEN=${BOT_TOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - ./data:/app/data
       - ./reels_cache.db:/app/reels_cache.db
     command: ["npm", "run", "bot"]
 
-  instagram-reels-server:
-    build: .
-    container_name: instagram-reels-server
-    restart: unless-stopped
-    ports:
-      - "3667:3666"
-    environment:
-      - NODE_ENV=production
-      - PORT=3666
-    volumes:
-      - ./data:/app/data
-    command: ["npm", "start"] 
