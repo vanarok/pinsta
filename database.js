@@ -4,6 +4,7 @@ const db = new sqlite3.Database('./reels_cache.db');
 // Создаем таблицу для кэша, если она не существует
 db.serialize(() => {
     // Создаем таблицу с новым полем caption
+    // reel_id может содержать префикс типа: "instagram:ID" или "youtube:ID"
     db.run(`CREATE TABLE IF NOT EXISTS cache (
         reel_id TEXT PRIMARY KEY,
         file_id TEXT,
@@ -19,8 +20,8 @@ db.serialize(() => {
 });
 
 /**
- * Получает данные из кэша по reel_id
- * @param {string} reelId - ID рилса
+ * Получает данные из кэша по video_id (с префиксом типа)
+ * @param {string} videoId - ID видео с префиксом (например, "instagram:ABC" или "youtube:XYZ")
  * @returns {Promise<{fileId: string, caption: string}|null>} - данные или null
  */
 function getCachedFileId(reelId) {
@@ -41,7 +42,7 @@ function getCachedFileId(reelId) {
 
 /**
  * Сохраняет file_id и caption в кэш
- * @param {string} reelId - ID рилса
+ * @param {string} videoId - ID видео с префиксом (например, "instagram:ABC" или "youtube:XYZ")
  * @param {string} fileId - file_id видео в Telegram
  * @param {string|null} caption - заголовок видео (опционально)
  */

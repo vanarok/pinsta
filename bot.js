@@ -46,16 +46,43 @@ function extractReelId(url) {
 }
 
 /**
- * Downloads a video using yt-dlp.
- * @param {string} url - The video URL.
- * @param {string} reelId - The Reel ID for the output filename.
+ * Extracts the Video ID from a YouTube URL.
+ * Supports formats: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/shorts/ID
+ * @param {string} url - The YouTube URL.
+ * @returns {string|null} The Video ID or null.
+ */
+function extractYoutubeId(url) {
+    // youtube.com/watch?v=ID
+    let match = url.match(/[?&]v=([^&\s]+)/);
+    if (match) return match[1];
+
+    // youtu.be/ID
+    match = url.match(/youtu\.be\/([^\/?&\s]+)/);
+    if (match) return match[1];
+
+    // youtube.com/shorts/ID
+    match = url.match(/\/shorts\/([^\/?&\s]+)/);
+    if (match) return match[1];
+
+    return null;
+}
+
+/**
+ * Downloads a video using yt-dlp with size limit for Telegram (50MB).
+ * @param {string} url - The video URL (Instagram or YouTube).
+ * @param {string} videoId - The video ID for the output filename (can include type prefix).
  * @returns {Promise<string>} The path to the downloaded video.
  */
-function downloadVideo(url, reelId) {
+function downloadVideo(url, videoId) {
     return new Promise((resolve, reject) => {
         const tempDir = os.tmpdir();
-        const outputPath = path.join(tempDir, `${reelId}.mp4`);
-        const command = `yt-dlp -f "best[ext=mp4]/best" -o "${outputPath}" "${url}"`;
+        // Replace ':' with '_' for filesystem compatibility
+        const safeVideoId = videoId.replace(/:/g, '_');
+        const outputPath = path.join(tempDir, `${safeVideoId}.mp4`);
+
+        // Limit video quality to fit within Telegram's 50MB limit
+        // Format selection: prefer 720p or lower, with filesize under 50MB
+        const command = `yt-dlp -f "best[height<=720][filesize<50M][ext=mp4]/best[height<=480][ext=mp4]/best[ext=mp4]" -o "${outputPath}" "${url}"`;
 
         exec(command, { timeout: 60000 }, (error) => {
             if (error) {
@@ -67,6 +94,64 @@ function downloadVideo(url, reelId) {
             } else {
                 reject(new Error('Downloaded file not found.'));
             }
+        });
+    });
+}
+
+/**
+ * Compresses a video to fit within Telegram's 50MB limit.
+ * @param {string} videoPath - Path to the original video file.
+ * @param {number} targetSizeMB - Target size in MB (default: 45MB for safety margin).
+ * @returns {Promise<string>} Path to the compressed video.
+ */
+function compressVideo(videoPath, targetSizeMB = 45) {
+    return new Promise((resolve, reject) => {
+        const compressedPath = videoPath.replace('.mp4', '_compressed.mp4');
+
+        // First, get video duration and current bitrate
+        const getDurationCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`;
+
+        exec(getDurationCmd, { timeout: 10000 }, (error, stdout) => {
+            if (error) {
+                console.error('Duration Detection Error:', error);
+                return reject(error);
+            }
+
+            const duration = parseFloat(stdout.trim());
+            if (!duration || duration <= 0) {
+                return reject(new Error('Invalid video duration'));
+            }
+
+            // Calculate target bitrate: (target size in bits) / duration
+            // Formula: (targetSizeMB * 8 * 1024 * 1024) / duration - audio bitrate
+            const audioBitrate = 128; // 128k for audio
+            const targetTotalBitrate = (targetSizeMB * 8 * 1024) / duration; // in kbps
+            const targetVideoBitrate = Math.floor(targetTotalBitrate - audioBitrate);
+
+            if (targetVideoBitrate < 100) {
+                return reject(new Error('Video too long to compress to 50MB'));
+            }
+
+            console.log(`Compressing video: duration=${duration.toFixed(1)}s, target video bitrate=${targetVideoBitrate}k`);
+
+            // Compress with calculated bitrate, using fast preset for speed
+            const compressCmd = `ffmpeg -i "${videoPath}" -c:v libx264 -preset fast -b:v ${targetVideoBitrate}k -c:a aac -b:a ${audioBitrate}k -movflags +faststart "${compressedPath}"`;
+
+            exec(compressCmd, { timeout: 120000 }, (error) => {
+                if (error) {
+                    console.error('Compression Error:', error);
+                    return reject(error);
+                }
+
+                if (fs.existsSync(compressedPath)) {
+                    const stats = fs.statSync(compressedPath);
+                    const compressedSizeMB = stats.size / (1024 * 1024);
+                    console.log(`✅ Video compressed: ${compressedSizeMB.toFixed(2)}MB`);
+                    resolve(compressedPath);
+                } else {
+                    reject(new Error('Compressed file not found'));
+                }
+            });
         });
     });
 }
@@ -170,6 +255,46 @@ function findInstagramLinks(text) {
     return text.match(instagramRegex) || [];
 }
 
+/**
+ * Finds YouTube links in a given text.
+ * Supports: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/shorts/ID
+ * @param {string} text - The text to search.
+ * @returns {string[]} An array of found YouTube links.
+ */
+function findYoutubeLinks(text) {
+    const youtubeRegex = /https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)[^\s]+/g;
+    return text.match(youtubeRegex) || [];
+}
+
+/**
+ * Finds all supported video links (Instagram + YouTube) in a given text.
+ * @param {string} text - The text to search.
+ * @returns {Array<{url: string, type: 'instagram'|'youtube', videoId: string}>} An array of found links with metadata.
+ */
+function findVideoLinks(text) {
+    const links = [];
+
+    // Find Instagram links
+    const instagramLinks = findInstagramLinks(text);
+    for (const url of instagramLinks) {
+        const videoId = extractReelId(url);
+        if (videoId) {
+            links.push({ url, type: 'instagram', videoId });
+        }
+    }
+
+    // Find YouTube links
+    const youtubeLinks = findYoutubeLinks(text);
+    for (const url of youtubeLinks) {
+        const videoId = extractYoutubeId(url);
+        if (videoId) {
+            links.push({ url, type: 'youtube', videoId });
+        }
+    }
+
+    return links;
+}
+
 // --- Bot Logic ---
 
 /**
@@ -179,25 +304,25 @@ bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text || '';
 
-    const instagramLinks = findInstagramLinks(text);
-    if (instagramLinks.length === 0) return;
+    const videoLinks = findVideoLinks(text);
+    if (videoLinks.length === 0) return;
 
-    for (const link of instagramLinks) {
-        const reelId = extractReelId(link);
-        if (!reelId) continue;
-
+    for (const { url, type, videoId } of videoLinks) {
         try {
             await bot.sendChatAction(chatId, 'typing');
 
+            // Create unique cache key with type prefix
+            const cacheKey = `${type}:${videoId}`;
+
             // 1. Check cache
-            const cached = await getCachedFileId(reelId);
+            const cached = await getCachedFileId(cacheKey);
             if (cached) {
                 await bot.sendChatAction(chatId, 'upload_video');
                 await bot.sendVideo(chatId, cached.fileId, {
                     caption: cached.caption || undefined,
                     reply_to_message_id: msg.message_id
                 });
-                console.log(`Sent from cache: ${reelId}${cached.caption ? ` (caption: "${cached.caption}")` : ''}`);
+                console.log(`Sent from cache [${type}]: ${videoId}${cached.caption ? ` (caption: "${cached.caption}")` : ''}`);
                 continue; // Move to the next link
             }
 
@@ -207,7 +332,35 @@ bot.on('message', async (msg) => {
                 continue;
             }
 
-            const videoPath = await downloadVideo(link, reelId);
+            let videoPath = await downloadVideo(url, cacheKey);
+            let compressedPath = null;
+
+            // Check file size (Telegram limit is 50MB)
+            const stats = fs.statSync(videoPath);
+            const fileSizeMB = stats.size / (1024 * 1024);
+            console.log(`Downloaded video size: ${fileSizeMB.toFixed(2)} MB`);
+
+            if (fileSizeMB > 50) {
+                try {
+                    await bot.sendMessage(chatId, `⚙️ Видео слишком большое (${fileSizeMB.toFixed(1)}MB), сжимаю...`, {
+                        reply_to_message_id: msg.message_id
+                    });
+
+                    compressedPath = await compressVideo(videoPath);
+                    // Use compressed video instead
+                    videoPath = compressedPath;
+                } catch (compressError) {
+                    console.error('Failed to compress video:', compressError);
+                    await bot.sendMessage(chatId, `❌ Не удалось сжать видео (${fileSizeMB.toFixed(1)}MB). Слишком большой размер.`, {
+                        reply_to_message_id: msg.message_id
+                    });
+                    // Cleanup
+                    fs.unlink(videoPath, (err) => {
+                        if (err) console.error('File Cleanup Error:', err);
+                    });
+                    continue;
+                }
+            }
 
             // 3. Generate caption and upload video in parallel
             await bot.sendChatAction(chatId, 'upload_video');
@@ -230,10 +383,9 @@ bot.on('message', async (msg) => {
                 }
             })() : Promise.resolve(null);
 
-            const uploadPromise = bot.sendVideo(chatId, videoPath, {
-                reply_to_message_id: msg.message_id
-            }, {
-                contentType: 'video/mp4'
+            const uploadPromise = bot.sendVideo(chatId, fs.createReadStream(videoPath), {
+                reply_to_message_id: msg.message_id,
+                filename: `video.mp4`
             });
 
             // Wait for both to complete
@@ -254,13 +406,22 @@ bot.on('message', async (msg) => {
 
             // 5. Cache with caption
             if (sentMessage.video) {
-                await cacheFileId(reelId, sentMessage.video.file_id, caption);
+                await cacheFileId(cacheKey, sentMessage.video.file_id, caption);
             }
 
             // 6. Cleanup
             fs.unlink(videoPath, (err) => {
                 if (err) console.error('File Cleanup Error:', err);
             });
+            // Also cleanup original file if video was compressed
+            if (compressedPath) {
+                const originalPath = compressedPath.replace('_compressed.mp4', '.mp4');
+                if (originalPath !== videoPath && fs.existsSync(originalPath)) {
+                    fs.unlink(originalPath, (err) => {
+                        if (err) console.error('Original File Cleanup Error:', err);
+                    });
+                }
+            }
             if (framePath) {
                 fs.unlink(framePath, (err) => {
                     if (err) console.error('Frame Cleanup Error:', err);
@@ -268,8 +429,8 @@ bot.on('message', async (msg) => {
             }
 
         } catch (error) {
-            console.error(`Failed to process link ${link}:`, error);
-            await bot.sendMessage(chatId, `❌ Error processing link: ${link}`);
+            console.error(`Failed to process link ${url}:`, error);
+            await bot.sendMessage(chatId, `❌ Error processing link: ${url}`);
         }
     }
 });
